@@ -20,8 +20,8 @@ with sync_playwright() as p:
     for url in urls:
         page = ctx.new_page()
         try:
-            page.goto(url, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(2000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(6000)
             raw = page.eval_on_selector_all(
                 "a[href]", "els => els.map(e => [e.href, (e.innerText||'').trim()])")
         except Exception as e:
