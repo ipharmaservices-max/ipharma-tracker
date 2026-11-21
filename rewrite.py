@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 
 KEY = os.environ["GEMINI_API_KEY"]
-MODEL = "gemini-2.5-flash"      # if you get a "model not found" error, see the note below
+MODEL = "gemini-3.8-flash"      # if you get a "model not found" error, copy the model name from the error message
 MAX_ARTICLES = 8                # rewrites per day
 MIN_SCORE = 7                   # importance cut-off (1-10)
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36"}
@@ -31,7 +31,9 @@ def gemini(prompt):
             except Exception:
                 pass
         else:
-            print("Gemini error", r.status_code, r.text[:200])
+            print("Gemini error", r.status_code, r.text[:300])
+            if r.status_code in (400, 403, 404):   # retrying will not help
+                return None
         time.sleep(20 * (attempt + 1))
     return None
 
@@ -61,6 +63,7 @@ print(len(new), "new links to look at")
 
 # ---------- Step 3: importance scoring (batches) ----------
 keep = []
+scored_ok = set()      # links that Gemini really scored
 for i in range(0, len(new), 40):
     batch = new[i:i+40]
     lines = "\n".join(f"{j}. [{b['site']}] {b['title']}" for j, b in enumerate(batch))
@@ -70,10 +73,14 @@ for i in range(0, len(new), 40):
               "changes, major deals, important company announcements. Low (1-3): menu items, careers, "
               "about-us, events, generic pages, marketing, duplicate navigation links. "
               'Return JSON only: [{"id": 0, "score": 8}, ...]\n\n' + lines)
-    res = gemini(prompt) or []
+    res = gemini(prompt)
+    if not isinstance(res, list):
+        print("scoring failed for this batch; links will be retried next run")
+        continue
     scores = {r.get("id"): r.get("score", 0) for r in res if isinstance(r, dict)}
     for j, b in enumerate(batch):
         b["score"] = scores.get(j, 0)
+        scored_ok.add(b["url"])
         if b["score"] >= MIN_SCORE:
             keep.append(b)
     time.sleep(8)
@@ -107,20 +114,23 @@ SOURCE:
 def plain(h):
     return re.sub(r"<[^>]+>", " ", h)
 
+retry_later = set()    # links where Gemini failed during the rewrite
 for item in keep:
-    done.add(item["url"])
     src = fetch_text(item["url"])
     if len(src) < 800:
         print("skipped (could not read)", item["url"])
         continue
     out = gemini(write_prompt(src))
-    if not out or out.get("skip"):
+    if out is None:
+        retry_later.add(item["url"])
+        continue
+    if not isinstance(out, dict) or out.get("skip"):
         continue
     ov = overlap(src, plain(out.get("article_html", "")))
     if ov > 0.15:
         out2 = gemini(write_prompt(src, "IMPORTANT: your last attempt was too close to the source. "
                                         "Use completely different wording and sentence structure."))
-        if out2 and not out2.get("skip"):
+        if isinstance(out2, dict) and not out2.get("skip"):
             out, ov = out2, overlap(src, plain(out2.get("article_html", "")))
     out["article_html"] = re.sub(r"(?is)<script.*?</script>", "", out.get("article_html", ""))
     jsonld = {"@context": "https://schema.org", "@type": "NewsArticle",
@@ -134,9 +144,8 @@ for item in keep:
                       "overlap": round(ov * 100), "jsonld": json.dumps(jsonld, indent=2), **out})
     time.sleep(8)
 
-# mark every scored link as done so it is not processed again
-for h in new:
-    done.add(h["url"])
+# mark links as done only if Gemini really handled them
+done.update(scored_ok - retry_later)
 json.dump(sorted(done), open("processed.json", "w"))
 json.dump(drafts[:60], open("drafts.json", "w"), indent=1)
 
