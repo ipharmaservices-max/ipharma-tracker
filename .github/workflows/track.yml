@@ -19,6 +19,12 @@ jobs:
       - run: python rewrite.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - run: python push_to_wix.py
+        continue-on-error: true
+        env:
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+          WIX_MEMBER_ID: ${{ secrets.WIX_MEMBER_ID }}
       - run: |
           git config user.name "bot"
           git config user.email "bot@users.noreply.github.com"
